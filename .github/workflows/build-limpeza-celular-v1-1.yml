@@ -1,0 +1,294 @@
+name: Gerar APK Limpeza Celular V1.1
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Criar projeto Android
+        shell: bash
+        run: |
+          mkdir -p app/src/main/java/com/rofranco/limpezacelular
+          mkdir -p app/src/main/res/values
+
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "LimpezaCelular"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.7.3" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+          }
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.rofranco.limpezacelular"
+              compileSdk = 35
+
+              defaultConfig {
+                  applicationId = "com.rofranco.limpezacelular"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 2
+                  versionName = "1.1"
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+              <application
+                  android:theme="@style/AppTheme"
+                  android:label="Limpeza Celular">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:colorAccent">#1976D2</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > app/src/main/java/com/rofranco/limpezacelular/MainActivity.kt <<'EOF'
+          package com.rofranco.limpezacelular
+
+          import android.app.*
+          import android.os.*
+          import android.content.*
+          import android.graphics.Color
+          import android.net.Uri
+          import android.provider.Settings
+          import android.widget.*
+          import java.io.File
+
+          class MainActivity : Activity() {
+              private lateinit var info: TextView
+              private lateinit var list: LinearLayout
+              private val found = mutableListOf<File>()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(32, 40, 32, 24)
+                  }
+
+                  root.addView(TextView(this).apply {
+                      text = "LIMPEZA CELULAR"
+                      textSize = 27f
+                      setTextColor(Color.rgb(20,70,120))
+                  })
+
+                  info = TextView(this).apply {
+                      textSize = 18f
+                      setPadding(0,24,0,24)
+                  }
+                  root.addView(info)
+
+                  root.addView(Button(this).apply {
+                      text = "VERIFICAR E PROCURAR ARQUIVOS GRANDES"
+                      setOnClickListener { scan() }
+                  })
+
+                  root.addView(Button(this).apply {
+                      text = "PERMITIR ACESSO AOS ARQUIVOS"
+                      setOnClickListener { permission() }
+                  })
+
+                  list = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                  }
+
+                  root.addView(
+                      ScrollView(this).apply { addView(list) },
+                      LinearLayout.LayoutParams(-1,0,1f)
+                  )
+
+                  setContentView(root)
+                  status()
+              }
+
+              private fun formatBytes(v: Long): String =
+                  String.format("%.2f GB", v / 1073741824.0)
+
+              private fun status() {
+                  val storage = filesDir
+                  val total = storage.totalSpace
+                  val free = storage.freeSpace
+                  val used = total - free
+                  val pct = if (total > 0) (used * 100 / total) else 0
+
+                  info.text =
+                      "Armazenamento total: ${formatBytes(total)}\n" +
+                      "Usado: ${formatBytes(used)} ($pct%)\n" +
+                      "Livre: ${formatBytes(free)}\n\n" +
+                      "Nada será apagado sem sua confirmação."
+              }
+
+              private fun permission() {
+                  if (Build.VERSION.SDK_INT >= 30) {
+                      startActivity(
+                          Intent(
+                              Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                              Uri.parse("package:$packageName")
+                          )
+                      )
+                  }
+              }
+
+              private fun scan() {
+                  status()
+                  list.removeAllViews()
+                  found.clear()
+
+                  if (Build.VERSION.SDK_INT >= 30 &&
+                      !android.os.Environment.isExternalStorageManager()) {
+                      Toast.makeText(
+                          this,
+                          "Permita acesso aos arquivos primeiro.",
+                          Toast.LENGTH_LONG
+                      ).show()
+                      permission()
+                      return
+                  }
+
+                  walk(android.os.Environment.getExternalStorageDirectory())
+
+                  val items = found
+                      .sortedByDescending { it.length() }
+                      .take(200)
+
+                  if (items.isEmpty()) {
+                      list.addView(TextView(this).apply {
+                          text = "Nenhum arquivo acima de 10 MB encontrado."
+                      })
+                      return
+                  }
+
+                  items.forEach { file ->
+                      list.addView(CheckBox(this).apply {
+                          text = "${file.name}  •  ${
+                              String.format("%.1f MB", file.length()/1048576.0)
+                          }"
+                          tag = file
+                      })
+                  }
+
+                  list.addView(Button(this).apply {
+                      text = "EXCLUIR SELECIONADOS"
+                      setOnClickListener { confirmDelete() }
+                  })
+              }
+
+              private fun walk(file: File) {
+                  try {
+                      file.listFiles()?.forEach {
+                          if (it.isDirectory) {
+                              walk(it)
+                          } else if (it.length() >= 10L * 1024 * 1024) {
+                              found.add(it)
+                          }
+                      }
+                  } catch (_: Exception) {}
+              }
+
+              private fun confirmDelete() {
+                  val chosen = (0 until list.childCount)
+                      .mapNotNull { list.getChildAt(it) as? CheckBox }
+                      .filter { it.isChecked }
+                      .map { it.tag as File }
+
+                  if (chosen.isEmpty()) {
+                      Toast.makeText(
+                          this,
+                          "Selecione os arquivos.",
+                          Toast.LENGTH_SHORT
+                      ).show()
+                      return
+                  }
+
+                  val bytes = chosen.sumOf { it.length() }
+
+                  AlertDialog.Builder(this)
+                      .setTitle("Confirmar limpeza")
+                      .setMessage(
+                          "Excluir ${chosen.size} arquivo(s) e liberar aproximadamente ${
+                              String.format("%.1f MB", bytes/1048576.0)
+                          }?\n\nConfira a lista antes de excluir. A ação não pode ser desfeita."
+                      )
+                      .setNegativeButton("Cancelar", null)
+                      .setPositiveButton("Excluir") { _, _ ->
+                          var deleted = 0
+                          chosen.forEach {
+                              if (it.delete()) deleted++
+                          }
+                          Toast.makeText(
+                              this,
+                              "$deleted arquivo(s) excluído(s).",
+                              Toast.LENGTH_LONG
+                          ).show()
+                          scan()
+                      }
+                      .show()
+              }
+          }
+          EOF
+
+      - name: Configurar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Gerar APK
+        run: gradle assembleDebug
+
+      - name: Publicar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Limpeza-Celular-V1-1
+          path: app/build/outputs/apk/debug/app-debug.apk
